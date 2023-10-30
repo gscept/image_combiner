@@ -70,7 +70,7 @@ fn main() {
             }
 
             use std::time::Instant;
-            let now = Instant::now();
+            let mut now = Instant::now();
 
             // Open files
             let mut files: Vec<Option<DynamicImage>> = vec![None, None, None, None];
@@ -139,22 +139,20 @@ fn main() {
             print!("Combining image (using {} threads)... ", num_cpus);
             io::stdout().flush().unwrap();
             let mut rgba: RgbaImage = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 255]));
+
             for img_idx in 0..swizzled_images.len() {
-                let source_buffer: Vec<&Rgba<u8>> = swizzled_images[img_idx].pixels().collect();
-                let mut dest_buffer: Vec<&mut Rgba<u8>> = rgba.pixels_mut().collect();
+                let mut source_data = swizzled_images[img_idx].chunks(THREAD_JOB_SIZE * 4);
+                let mut dest_data = rgba.chunks_mut(THREAD_JOB_SIZE * 4);
 
-                let mut source_chunks = source_buffer.chunks(THREAD_JOB_SIZE);
-                let mut dest_chunks = dest_buffer.chunks_mut(THREAD_JOB_SIZE);
-
-                for _ in (0..source_chunks.len()).step_by(num_cpus) {
+                for _ in (0..source_data.len()).step_by(num_cpus) {
                     thread::scope(|s: &thread::Scope<'_, '_>| {
                         for _ in 0..num_cpus {
-                            if let Some(source_chunk) = source_chunks.next() {
-                                let dest_chunk = dest_chunks.next().unwrap();
+                            if let Some(source_chunk) = source_data.next() {
+                                let dest_chunk = dest_data.next().unwrap();
                                 s.spawn(|| {
                                     for i in 0..THREAD_JOB_SIZE {
-                                        let value = source_chunk[i].clone();
-                                        dest_chunk[i].0[img_idx] = value.0[img_idx];
+                                        let value = source_chunk[i * 4];
+                                        dest_chunk[i * 4 + img_idx] = value;
                                     }
                                 });
                             }
