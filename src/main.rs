@@ -172,7 +172,7 @@ fn main() {
             println!("Done");
 
             let elapsed = now.elapsed();
-            println!("Time taken: {:.2?}", elapsed);
+            println!("Time spent: {:.2?}", elapsed);
         }        
     }
     
