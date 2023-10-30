@@ -1,5 +1,5 @@
 [package]
-name = "texture_combiner"
+name = "image_combiner"
 version = "0.1.0"
 edition = "2021"
 
