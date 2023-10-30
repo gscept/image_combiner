@@ -7,12 +7,15 @@ use image::{RgbaImage, DynamicImage, Rgba};
 
 fn help() {
     println!("Usage: \n
-    -0 <path> Path to AO texture
-    -1 <path> Path to Metalness texture
-    -2 <path> Path to Roughness texture
-    -3 <path> Path to Emissive texture
+    -0 <path> Path of source image 0
+    -1 <path> Path of source image 1
+    -2 <path> Path of source image 2
+    -3 <path> Path of source image 3
     -s <mask> The swizzle mask, default is 0123
-    -o <path> Output
+    -o <path> Output path
+
+    The swizzle mask maps the red channel of image [0..3] to the corresponding image in the output.
+    The default mask 0123 would map sources [0, 1, 2, 3] to output [r, g, b, a] by extracting the first channel in each source image.
 ");
 }
 
@@ -63,14 +66,13 @@ fn main() {
     // Get output image
     if let Some(path) = output_path {
         if let Some(parent) = path.parent() {
+            let now = Instant::now();
 
             // Create entire file path to file
             if let Err(e) = std::fs::create_dir_all(parent) {
                 println!("Invalid path {}", parent.to_str().unwrap());
                 return;
             }
-
-            let mut now = Instant::now();
 
             // Open files
             let mut files: Vec<Option<DynamicImage>> = vec![None, None, None, None];
@@ -156,7 +158,6 @@ fn main() {
                                     }
                                 });
                             }
-                            
                         }
                     });
                 }
