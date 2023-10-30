@@ -1,6 +1,7 @@
 use std::{env, thread, io};
 use std::io::Write;
 use std::path::Path;
+use std::time::Instant;
 
 use image::{RgbaImage, DynamicImage, Rgba};
 
@@ -69,7 +70,6 @@ fn main() {
                 return;
             }
 
-            use std::time::Instant;
             let mut now = Instant::now();
 
             // Open files
@@ -133,7 +133,7 @@ fn main() {
             }
 
             const THREAD_JOB_SIZE: usize = 2048;
-            let num_cpus = num_cpus::get();
+            let num_cpus = num_cpus::get() * 2; // Assume hyperthreading
 
             // Create image
             print!("Combining image (using {} threads)... ", num_cpus);
@@ -169,8 +169,7 @@ fn main() {
             rgba.save_with_format(path, image::ImageFormat::Png).unwrap();
             println!("Done");
 
-            let elapsed = now.elapsed();
-            println!("Time spent: {:.2?}", elapsed);
+            println!("Time spent: {:.2?}", now.elapsed());
         }        
     }
     
