@@ -91,10 +91,12 @@ fn main() {
 
             // Break down swizzle mask into components
             let swizzles: Vec<usize> = swizzle_mask.chars().map(|f| f as usize - '0' as usize).collect();
-            let mut swizzled_images = Vec::<RgbaImage>::new();
+            let mut swizzled_images = Vec::<&[u8]>::new();
+            let mut strides = Vec::<u8>::new();
             for channel in 0..swizzles.len() {
                 if let Some(file) = &files[swizzles[channel]] {
-                    swizzled_images.push(file.to_rgba8());
+                    swizzled_images.push(file.as_bytes());
+                    strides.push(file.color().bytes_per_pixel());
                 } else {
                     println!("Swizzle mask needs source {}, but none provided", swizzle_mask.as_bytes()[channel]);
                     help();
@@ -143,7 +145,8 @@ fn main() {
             let mut rgba: RgbaImage = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 255]));
 
             for img_idx in 0..swizzled_images.len() {
-                let mut source_data = swizzled_images[img_idx].chunks(THREAD_JOB_SIZE * 4);
+                let read_stride = strides[img_idx] as usize;
+                let mut source_data = swizzled_images[img_idx].chunks(THREAD_JOB_SIZE * read_stride);
                 let mut dest_data = rgba.chunks_mut(THREAD_JOB_SIZE * 4);
 
                 for _ in (0..source_data.len()).step_by(num_cpus) {
@@ -153,7 +156,7 @@ fn main() {
                                 let dest_chunk = dest_data.next().unwrap();
                                 s.spawn(|| {
                                     for i in 0..THREAD_JOB_SIZE {
-                                        let value = source_chunk[i * 4];
+                                        let value = source_chunk[i * read_stride];
                                         dest_chunk[i * 4 + img_idx] = value;
                                     }
                                 });
