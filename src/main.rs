@@ -189,8 +189,8 @@ fn main() {
                 return;
             }
 
-            const THREAD_JOB_SIZE: usize = 0x1000000;
-            let num_cpus = num_cpus::get() * 2; // Assume hyperthreading
+            let thread_job_size = width as usize * 32;
+            let num_cpus = num_cpus::get(); // Assume hyperthreading
 
             // Create image
             print!("Combining image (using {} threads)... ", num_cpus);
@@ -201,8 +201,8 @@ fn main() {
                 let read_stride = byte_strides[img_idx] as usize;
                 let red_channel_stride = red_channel_strides[img_idx] as usize;
                 let format = formats[img_idx];
-                let mut source_data = swizzled_images[img_idx].chunks(THREAD_JOB_SIZE * read_stride);
-                let mut dest_data = rgba.chunks_mut(THREAD_JOB_SIZE * 4);
+                let mut source_data = swizzled_images[img_idx].chunks(thread_job_size * read_stride);
+                let mut dest_data = rgba.chunks_mut(thread_job_size * 4);
 
                 for _ in (0..source_data.len()).step_by(num_cpus) {
                     thread::scope(|s: &thread::Scope<'_, '_>| {
@@ -210,7 +210,7 @@ fn main() {
                             if let Some(source_chunk) = source_data.next() {
                                 let dest_chunk = dest_data.next().unwrap();
                                 s.spawn(|| {
-                                    for i in 0..THREAD_JOB_SIZE {
+                                    for i in 0..thread_job_size {
                                         let value : u8;
                                         unsafe {
                                             value = match format {
