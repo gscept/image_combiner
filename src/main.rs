@@ -5,6 +5,39 @@ use std::time::Instant;
 
 use image::{RgbaImage, DynamicImage, Rgba};
 
+#[derive(Clone, Copy, Debug)]
+enum ChannelFormat {
+    Uint8,
+    Uint16,
+    Float32
+}
+struct Timer {
+    time: Instant
+}
+
+impl Timer {
+
+    fn new() -> Timer {
+        return Timer { time: Instant::now() }
+    }
+
+    /// Start the timer
+    fn start(&mut self) {
+        self.time = Instant::now();
+    }
+
+    /// Write current elapsed time and reset timer
+    fn elapsed(&mut self) {
+        self.stop();
+        self.start();
+    }
+
+    /// Stop the timer and print output
+    fn stop(&self) {
+        println!("Time spent: {:.2?}", self.time.elapsed());
+    }
+
+}
 fn help() {
     println!("Usage: \n
     -0 <path> Path of source image 0
@@ -66,7 +99,8 @@ fn main() {
     // Get output image
     if let Some(path) = output_path {
         if let Some(parent) = path.parent() {
-            let now = Instant::now();
+
+            let mut timer = Timer::new();
 
             // Create entire file path to file
             if let Err(e) = std::fs::create_dir_all(parent) {
@@ -92,11 +126,30 @@ fn main() {
             // Break down swizzle mask into components
             let swizzles: Vec<usize> = swizzle_mask.chars().map(|f| f as usize - '0' as usize).collect();
             let mut swizzled_images = Vec::<&[u8]>::new();
-            let mut strides = Vec::<u8>::new();
+            let mut byte_strides = Vec::<u8>::new();
+            let mut red_channel_strides = Vec::<u8>::new();
+            let mut formats = Vec::<ChannelFormat>::new();
             for channel in 0..swizzles.len() {
                 if let Some(file) = &files[swizzles[channel]] {
                     swizzled_images.push(file.as_bytes());
-                    strides.push(file.color().bytes_per_pixel());
+                    byte_strides.push(file.color().bytes_per_pixel());
+                    red_channel_strides.push(file.color().channel_count());
+                    let format = match file.color() {
+                        image::ColorType::L8 => ChannelFormat::Uint8,
+                        image::ColorType::La8 => ChannelFormat::Uint8,
+                        image::ColorType::Rgb8 => ChannelFormat::Uint8,
+                        image::ColorType::Rgba8 => ChannelFormat::Uint8,
+
+                        image::ColorType::L16 => ChannelFormat::Uint16,
+                        image::ColorType::La16 => ChannelFormat::Uint16,
+                        image::ColorType::Rgb16 => ChannelFormat::Uint16,
+                        image::ColorType::Rgba16 => ChannelFormat::Uint16,
+
+                        image::ColorType::Rgb32F => ChannelFormat::Float32,
+                        image::ColorType::Rgba32F => ChannelFormat::Float32,
+                        _ => ChannelFormat::Uint8
+                    };
+                    formats.push(format);
                 } else {
                     println!("Swizzle mask needs source {}, but none provided", swizzle_mask.as_bytes()[channel]);
                     help();
@@ -136,7 +189,7 @@ fn main() {
                 return;
             }
 
-            const THREAD_JOB_SIZE: usize = 2048;
+            const THREAD_JOB_SIZE: usize = 0x1000000;
             let num_cpus = num_cpus::get() * 2; // Assume hyperthreading
 
             // Create image
@@ -145,7 +198,9 @@ fn main() {
             let mut rgba: RgbaImage = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 255]));
 
             for img_idx in 0..swizzled_images.len() {
-                let read_stride = strides[img_idx] as usize;
+                let read_stride = byte_strides[img_idx] as usize;
+                let red_channel_stride = red_channel_strides[img_idx] as usize;
+                let format = formats[img_idx];
                 let mut source_data = swizzled_images[img_idx].chunks(THREAD_JOB_SIZE * read_stride);
                 let mut dest_data = rgba.chunks_mut(THREAD_JOB_SIZE * 4);
 
@@ -156,7 +211,18 @@ fn main() {
                                 let dest_chunk = dest_data.next().unwrap();
                                 s.spawn(|| {
                                     for i in 0..THREAD_JOB_SIZE {
-                                        let value = source_chunk[i * read_stride];
+                                        let value : u8;
+                                        unsafe {
+                                            value = match format {
+                                                ChannelFormat::Uint8 => source_chunk[i * red_channel_stride],
+                                                ChannelFormat::Uint16 => {
+                                                    std::mem::transmute::<&[u8], &[u16]>(source_chunk)[i * red_channel_stride] as u8
+                                                },
+                                                ChannelFormat::Float32 => {
+                                                    std::mem::transmute::<&[u8], &[f32]>(source_chunk)[i * red_channel_stride] as u8
+                                                }
+                                            }
+                                        }
                                         dest_chunk[i * 4 + img_idx] = value;
                                     }
                                 });
@@ -173,7 +239,7 @@ fn main() {
             rgba.save_with_format(path, image::ImageFormat::Png).unwrap();
             println!("Done");
 
-            println!("Time spent: {:.2?}", now.elapsed());
+            timer.elapsed();
         }        
     }
     
