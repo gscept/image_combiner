@@ -45,6 +45,7 @@ fn help() {
     -2 <path> Path of source image 2
     -3 <path> Path of source image 3
     -s <mask> The swizzle mask, default is bbbw
+    -m <mask> The select mask, default is rrrr
     -o <path> Output path
 
     The swizzle mask (-s) maps the value in the mask to the channel in the output image corresponding to its index.
@@ -58,7 +59,9 @@ fn help() {
     Example 2: 
         Mask 01bw would map [s0, s1, 0, 255] to output [r, g, b, a].
 
-    In the above examples, the s prefix corresponds to a source image
+    In the above examples, the s prefix corresponds to a source image.
+
+    The select mask (-m) selects which channel from the source image to select. By default it's [r, r, r, r]
 ");
 }
 
@@ -81,6 +84,7 @@ fn main() {
     let args : Vec<String> = env::args().collect();
     let mut paths : Vec<Option<&Path>> = vec![None, None, None, None];
     let mut swizzle_mask: &str = "";
+    let mut select_mask: &str = "rrrr";
     let mut output_path = None;
     if (1..args.len()).len() % 2 != 0 {
         help();
@@ -92,6 +96,7 @@ fn main() {
             "-1" => paths[1] = Some(Path::new(args[arg_i + 1].as_str())),
             "-2" => paths[2] = Some(Path::new(args[arg_i + 1].as_str())),
             "-3" => paths[3] = Some(Path::new(args[arg_i + 1].as_str())),
+            "-m" => select_mask = args[arg_i + 1].as_str(),
             "-s" => swizzle_mask = args[arg_i + 1].as_str(),
             "-o" => output_path = Some(Path::new(args[arg_i + 1].as_str())),
             _ => {
@@ -105,6 +110,7 @@ fn main() {
         println!("Swizzle mask is less than 2, nothing to do here...");
         return;
     }
+
 
     // Get output image
     if let Some(path) = output_path {
@@ -120,22 +126,35 @@ fn main() {
 
             // Open files
             let mut files: Vec<Option<DynamicImage>> = vec![None, None, None, None];
+            let mut channel_selects: Vec<usize> = vec![0, 0, 0, 0];
+            let select_mask_bytes = select_mask.as_bytes();
 
             for path_idx in 0..paths.len() {
                 if let Some(path) = paths[path_idx] {
                     files[path_idx] = open_source_img(path);
 
                     if let None = files[path_idx] {
-                        println!("Invalid path {} for input -{}", path.to_str().unwrap(), path_idx);
+                        println!("Invalid path {} for input {}", path.to_str().unwrap(), path_idx);
                         help();
                         return;
+                    }
+
+                    match select_mask_bytes[path_idx] as char {
+                        'r' => channel_selects[path_idx] = 0,
+                        'g' => channel_selects[path_idx] = 1,
+                        'b' => channel_selects[path_idx] = 2,
+                        'a' => channel_selects[path_idx] = 3,
+                        other => {
+                            println!("Invalid select mask {} for input {}", other as char, path_idx);
+                            help();
+                            return;
+                        }
                     }
                 }
             }
 
             // Break down swizzle mask into components
             let mut fill = Rgba([0, 0, 0, 255]);
-            let chars = swizzle_mask.as_bytes();
             let swizzles: Vec<Option<u32>> = swizzle_mask.chars().map(|f| f.to_digit(10)).collect();
             let mut swizzled_images = Vec::<&[u8]>::new();
             let mut byte_strides = Vec::<u8>::new();
@@ -143,10 +162,20 @@ fn main() {
             let mut formats = Vec::<ChannelFormat>::new();
             for channel in 0..swizzles.len() {
                 if let Some(swizzle) = swizzles[channel] {
+                    if swizzle > 3 {
+                        println!("Swizzle mask contains source image out of bounds {}", swizzle);
+                        help();
+                        return;
+                    }
                     if let Some(file) = &files[swizzle as usize] {
                         swizzled_images.push(file.as_bytes());
                         byte_strides.push(file.color().bytes_per_pixel());
-                        red_channel_strides.push(file.color().channel_count());
+                        let channel_count = file.color().channel_count();
+                        red_channel_strides.push(channel_count);
+                        if channel_count <= channel_selects[swizzle as usize] as u8 {
+                            println!("[WARNING] Input {} has {} channel(s) but select mask is '{}', clamping channel to {}", swizzle, channel_count, select_mask_bytes[swizzle as usize] as char, channel_count);
+                            channel_selects[swizzle as usize] = (channel_count - 1) as usize;
+                        }
                         let format = match file.color() {
                             image::ColorType::L8 => ChannelFormat::Uint8,
                             image::ColorType::La8 => ChannelFormat::Uint8,
@@ -170,12 +199,13 @@ fn main() {
                     }
                 } else {
                     // If swizzle isn't a number, check if it uses any fill value
-                    match chars[channel] as char {
+                    let swizzle_mask_bytes = swizzle_mask.as_bytes();
+                    match swizzle_mask_bytes[channel] as char {
                         'b' => fill.0[channel] = 0,
                         'w' => fill.0[channel] = 255,
                         'g' => fill.0[channel] = 128,
                         _ => {
-                            println!("Invalid swizzle character '{}'", chars[channel] as char);
+                            println!("Invalid swizzle character '{}'", swizzle_mask_bytes[channel] as char);
                             help();
                             return;
                         }
@@ -209,7 +239,7 @@ fn main() {
                 println!("All input images must share the same size:");
                 for img_idx in 0..files.len() {
                     if let Some(img) = &files[img_idx] {
-                        println!("{} (argument -{}) - width: {}, height: {}", paths[img_idx].unwrap().to_str().unwrap(), img_idx, img.width(), img.height());
+                        println!("{} (Input {}) - width: {}, height: {}", paths[img_idx].unwrap().to_str().unwrap(), img_idx, img.width(), img.height());
                     }
                 }
                 help();
@@ -227,6 +257,7 @@ fn main() {
             for img_idx in 0..swizzled_images.len() {
                 let read_stride = byte_strides[img_idx] as usize;
                 let red_channel_stride = red_channel_strides[img_idx] as usize;
+                let channel_select_offset = channel_selects[img_idx] as usize;
                 let format = formats[img_idx];
                 let mut source_data = swizzled_images[img_idx].chunks(thread_job_size * read_stride);
                 let mut dest_data = rgba.chunks_mut(thread_job_size * 4);
@@ -241,12 +272,12 @@ fn main() {
                                         let value : u8;
                                         unsafe {
                                             value = match format {
-                                                ChannelFormat::Uint8 => source_chunk[i * red_channel_stride],
+                                                ChannelFormat::Uint8 => source_chunk[i * red_channel_stride + channel_select_offset],
                                                 ChannelFormat::Uint16 => {
-                                                    std::mem::transmute::<&[u8], &[u16]>(source_chunk)[i * red_channel_stride] as u8
+                                                    std::mem::transmute::<&[u8], &[u16]>(source_chunk)[i * red_channel_stride + channel_select_offset] as u8
                                                 },
                                                 ChannelFormat::Float32 => {
-                                                    std::mem::transmute::<&[u8], &[f32]>(source_chunk)[i * red_channel_stride] as u8
+                                                    std::mem::transmute::<&[u8], &[f32]>(source_chunk)[i * red_channel_stride + channel_select_offset] as u8
                                                 }
                                             }
                                         }
