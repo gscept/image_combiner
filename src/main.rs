@@ -44,11 +44,21 @@ fn help() {
     -1 <path> Path of source image 1
     -2 <path> Path of source image 2
     -3 <path> Path of source image 3
-    -s <mask> The swizzle mask, default is 0123
+    -s <mask> The swizzle mask, default is bbbw
     -o <path> Output path
 
-    The swizzle mask maps the red channel of image [0..3] to the corresponding image in the output.
-    The default mask 0123 would map sources [0, 1, 2, 3] to output [r, g, b, a] by extracting the first channel in each source image.
+    The swizzle mask (-s) maps the value in the mask to the channel in the output image corresponding to its index.
+    Allowed values are:
+        [0..3] - Reads the image at index
+        b, w, g - Fills with either 0 (b), 255 (w) or 128 (g)
+
+    By default, the swizzle mask is bbbw which means the output image will have [0, 0, 0, 255] in every channel. 
+    Example 1: 
+        Mask 0123 would map [s0, s1, s2, s3] to output [r, g, b, a] by extracting the first channel in each source image.
+    Example 2: 
+        Mask 01bw would map [s0, s1, 0, 255] to output [r, g, b, a].
+
+    In the above examples, the s prefix corresponds to a source image
 ");
 }
 
@@ -124,37 +134,54 @@ fn main() {
             }
 
             // Break down swizzle mask into components
-            let swizzles: Vec<usize> = swizzle_mask.chars().map(|f| f as usize - '0' as usize).collect();
+            let mut fill = Rgba([0, 0, 0, 255]);
+            let chars = swizzle_mask.as_bytes();
+            let swizzles: Vec<Option<u32>> = swizzle_mask.chars().map(|f| f.to_digit(10)).collect();
             let mut swizzled_images = Vec::<&[u8]>::new();
             let mut byte_strides = Vec::<u8>::new();
             let mut red_channel_strides = Vec::<u8>::new();
             let mut formats = Vec::<ChannelFormat>::new();
             for channel in 0..swizzles.len() {
-                if let Some(file) = &files[swizzles[channel]] {
-                    swizzled_images.push(file.as_bytes());
-                    byte_strides.push(file.color().bytes_per_pixel());
-                    red_channel_strides.push(file.color().channel_count());
-                    let format = match file.color() {
-                        image::ColorType::L8 => ChannelFormat::Uint8,
-                        image::ColorType::La8 => ChannelFormat::Uint8,
-                        image::ColorType::Rgb8 => ChannelFormat::Uint8,
-                        image::ColorType::Rgba8 => ChannelFormat::Uint8,
-
-                        image::ColorType::L16 => ChannelFormat::Uint16,
-                        image::ColorType::La16 => ChannelFormat::Uint16,
-                        image::ColorType::Rgb16 => ChannelFormat::Uint16,
-                        image::ColorType::Rgba16 => ChannelFormat::Uint16,
-
-                        image::ColorType::Rgb32F => ChannelFormat::Float32,
-                        image::ColorType::Rgba32F => ChannelFormat::Float32,
-                        _ => ChannelFormat::Uint8
-                    };
-                    formats.push(format);
+                if let Some(swizzle) = swizzles[channel] {
+                    if let Some(file) = &files[swizzle as usize] {
+                        swizzled_images.push(file.as_bytes());
+                        byte_strides.push(file.color().bytes_per_pixel());
+                        red_channel_strides.push(file.color().channel_count());
+                        let format = match file.color() {
+                            image::ColorType::L8 => ChannelFormat::Uint8,
+                            image::ColorType::La8 => ChannelFormat::Uint8,
+                            image::ColorType::Rgb8 => ChannelFormat::Uint8,
+                            image::ColorType::Rgba8 => ChannelFormat::Uint8,
+    
+                            image::ColorType::L16 => ChannelFormat::Uint16,
+                            image::ColorType::La16 => ChannelFormat::Uint16,
+                            image::ColorType::Rgb16 => ChannelFormat::Uint16,
+                            image::ColorType::Rgba16 => ChannelFormat::Uint16,
+    
+                            image::ColorType::Rgb32F => ChannelFormat::Float32,
+                            image::ColorType::Rgba32F => ChannelFormat::Float32,
+                            _ => ChannelFormat::Uint8
+                        };
+                        formats.push(format);
+                    } else {
+                        println!("Swizzle mask needs source {}, but none provided", swizzle_mask.as_bytes()[channel]);
+                        help();
+                        return;
+                    }
                 } else {
-                    println!("Swizzle mask needs source {}, but none provided", swizzle_mask.as_bytes()[channel]);
-                    help();
-                    return;
+                    // If swizzle isn't a number, check if it uses any fill value
+                    match chars[channel] as char {
+                        'b' => fill.0[channel] = 0,
+                        'w' => fill.0[channel] = 255,
+                        'g' => fill.0[channel] = 128,
+                        _ => {
+                            println!("Invalid swizzle character '{}'", chars[channel] as char);
+                            help();
+                            return;
+                        }
+                    }
                 }
+               
             }
 
             // Assert all images have the same size
@@ -195,7 +222,7 @@ fn main() {
             // Create image
             print!("Combining image (using {} threads)... ", num_cpus);
             io::stdout().flush().unwrap();
-            let mut rgba: RgbaImage = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 255]));
+            let mut rgba: RgbaImage = RgbaImage::from_pixel(width, height, fill);
 
             for img_idx in 0..swizzled_images.len() {
                 let read_stride = byte_strides[img_idx] as usize;
