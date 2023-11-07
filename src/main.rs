@@ -1,4 +1,5 @@
 use std::borrow::BorrowMut;
+use std::thread::ScopedJoinHandle;
 use std::{env, thread, io};
 use std::io::Write;
 use std::path::Path;
@@ -49,10 +50,15 @@ impl Printer {
     fn new() -> Printer {
         return Printer {prev_str: String::new()}
     }
+
+    fn reserve_caret(&mut self) {
+        let cursor = crossterm::cursor::cursor();
+    }
     
     fn start_print(&mut self, str: String) {
         let mut stdout = io::stdout();
         self.prev_str = str;
+        stdout.cu
         stdout.queue(cursor::SavePosition).unwrap();
         stdout.write_all(self.prev_str.as_bytes()).unwrap();
         stdout.flush().unwrap();
@@ -107,21 +113,57 @@ fn help() {
 ");
 }
 
+/// Open images for reading
+fn open_source_images(paths: &Vec<Option<&std::path::Path>>) -> [Option<DynamicImage>; 4] {
+    let mut rets = [None, None, None, None];
+    let mut rets_chunks = rets.iter_mut();
+    thread::scope(|s| {
+        for path_idx in 0..paths.len() {
+            if let Some(path) = paths[path_idx] {
+                let ret = rets_chunks.next().unwrap();
+                s.spawn(|| {
+                    let mut local_printer = Printer::new();
+                    local_printer.start_print(format!("Reading {}", path.to_str().unwrap().bold()));
+                    let path_str = path.to_str().unwrap();
+                    let image_read = image::io::Reader::open(path_str);
+                    if let Ok(image) = image_read {
+                        if let Ok(image_raw) = image.decode() {
+                            local_printer.finish_print();
+                            ret.replace(image_raw);
+                            return;
+                        }
+                    }
+        
+                    local_printer.fail_print("Failed".to_string());
+                });
+            }
+        }        
+    });
+
+    return rets;
+}
+
 /// Open source image for reading
 fn open_source_img(path: &std::path::Path, printer: &mut Printer) -> Option<DynamicImage> {
-    let path_str = path.to_str().unwrap();
+    let mut res: Option<DynamicImage> = None;
+    thread::scope(|s| {
+        s.spawn(|| {
+            let path_str = path.to_str().unwrap();
+            printer.start_print(format!("Reading {}", path_str.bold()));
+            let image_read = image::io::Reader::open(path);
+            if let Ok(image) = image_read {
+                if let Ok(image_raw) = image.decode() {
+                    printer.finish_print();
+                    res.replace(image_raw);
+                    return;
+                }
+            }
 
-    printer.start_print(format!("Reading {}", path_str.bold()));
-    let image_read = image::io::Reader::open(path);
-    if let Ok(image) = image_read {
-        if let Ok(image_raw) = image.decode() {
-            printer.finish_print();
-            return Some(image_raw);
-        }
-    }
+            printer.fail_print("Failed".to_string());
+        }).join().unwrap();
+    });
 
-    printer.fail_print("Failed".to_string());
-    return None;
+    return res;
 }
 
 fn main() {
@@ -170,10 +212,33 @@ fn main() {
             }
 
             // Open files
-            let mut files: Vec<Option<DynamicImage>> = vec![None, None, None, None];
             let mut channel_selects: Vec<usize> = vec![0, 0, 0, 0];
             let select_mask_bytes = select_mask.as_bytes();
 
+            let images = open_source_images(&paths);
+            for path_idx in 0..paths.len() {
+                if let Some(path) = paths[path_idx] {
+                    if let None = images[path_idx] {
+                        printer.fail_print(format!("Invalid path {} for input {}", path.to_str().unwrap(), path_idx));
+                        help();
+                        return;
+                    }
+
+                    match select_mask_bytes[path_idx] as char {
+                        'r' => channel_selects[path_idx] = 0,
+                        'g' => channel_selects[path_idx] = 1,
+                        'b' => channel_selects[path_idx] = 2,
+                        'a' => channel_selects[path_idx] = 3,
+                        other => {
+                            printer.fail_print(format!("Invalid select mask {} for input {}", other as char, path_idx));
+                            help();
+                            return;
+                        }
+                    }
+                }
+            }
+        
+            /*
             for path_idx in 0..paths.len() {
                 if let Some(path) = paths[path_idx] {
                     files[path_idx] = open_source_img(path, &mut printer);
@@ -197,6 +262,7 @@ fn main() {
                     }
                 }
             }
+             */
 
             // Break down swizzle mask into components
             let mut fill = Rgba([0, 0, 0, 255]);
@@ -212,7 +278,7 @@ fn main() {
                         help();
                         return;
                     }
-                    if let Some(file) = &files[swizzle as usize] {
+                    if let Some(file) = &images[swizzle as usize] {
                         swizzled_images.push(file.as_bytes());
                         byte_strides.push(file.color().bytes_per_pixel());
                         let channel_count = file.color().channel_count();
@@ -264,7 +330,7 @@ fn main() {
             let mut image_size_mismatch = false;
 
             // Get dimensions of images
-            for img_opt in &files {
+            for img_opt in &images {
                 if let Some(img) = img_opt {
                     if width == 0xFFFFFFFF || height == 0xFFFFFFFF {
                         width = img.width();
@@ -281,8 +347,8 @@ fn main() {
             // If any size mismatches, throw error
             if image_size_mismatch {
                 printer.fail_print("All input images must share the same size:".to_string());
-                for img_idx in 0..files.len() {
-                    if let Some(img) = &files[img_idx] {
+                for img_idx in 0..images.len() {
+                    if let Some(img) = &images[img_idx] {
                         printer.fail_print(format!("{} (Input {}) - width: {}, height: {}", paths[img_idx].unwrap().to_str().unwrap(), img_idx, img.width(), img.height()));
                     }
                 }

@@ -10,6 +10,7 @@ image = "0.24.7"
 num_cpus = "1.0"
 colored = "2.0.4"
 crossterm = "0.27.0"
+crossterm_cursor = "0.4.0"
 
 [build]
 rustflags = "-C target-cpu=native"
