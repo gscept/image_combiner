@@ -1,5 +1,3 @@
-use std::borrow::BorrowMut;
-use std::thread::ScopedJoinHandle;
 use std::{env, thread, io};
 use std::io::Write;
 use std::path::Path;
@@ -43,32 +41,35 @@ impl Timer {
 }
 
 struct Printer {
-    prev_str: String
+    prev_str: String,
+    offset: u16,
 }
 
 impl Printer {
     fn new() -> Printer {
-        return Printer {prev_str: String::new()}
+        return Printer {prev_str: String::new(), offset: crossterm::cursor::position().unwrap().1}
     }
 
-    fn reserve_caret(&mut self) {
-        let cursor = crossterm::cursor::cursor();
+    fn reserve_line(&mut self, offset: u16) {
+        self.offset = self.offset + offset;
     }
-    
+
     fn start_print(&mut self, str: String) {
         let mut stdout = io::stdout();
         self.prev_str = str;
-        stdout.cu
-        stdout.queue(cursor::SavePosition).unwrap();
+        stdout.queue(cursor::MoveTo(0, self.offset)).unwrap();
         stdout.write_all(self.prev_str.as_bytes()).unwrap();
-        stdout.flush().unwrap();
     }
 
-    fn finish_print(&self) {
+    fn finish_print(&self, res: bool) {
         let mut stdout = io::stdout();
-        stdout.queue(cursor::RestorePosition).unwrap();
+        stdout.queue(cursor::MoveTo(0, self.offset)).unwrap(); 
         let padding = 96 - self.prev_str.len();
-        stdout.write_all(format!("{} {: >padding$}\n", self.prev_str, "done".bold().green()).as_bytes()).unwrap();
+        if res {
+            stdout.write_all(format!("{} {: >padding$}\n", self.prev_str, "done".bold().green()).as_bytes()).unwrap();
+        } else {
+            stdout.write_all(format!("{} {: >padding$}\n", self.prev_str, "fail".bold().red()).as_bytes()).unwrap();
+        }
         stdout.flush().unwrap();
     }
 
@@ -115,55 +116,45 @@ fn help() {
 
 /// Open images for reading
 fn open_source_images(paths: &Vec<Option<&std::path::Path>>) -> [Option<DynamicImage>; 4] {
+
+    // Setup array of image results
     let mut rets = [None, None, None, None];
-    let mut rets_chunks = rets.iter_mut();
+    let mut rets_iter = rets.iter_mut();
     thread::scope(|s| {
+
+        // Each file will have it's own line in the output
+        let mut cursor_offset: u16 = 0;
         for path_idx in 0..paths.len() {
             if let Some(path) = paths[path_idx] {
-                let ret = rets_chunks.next().unwrap();
-                s.spawn(|| {
-                    let mut local_printer = Printer::new();
-                    local_printer.start_print(format!("Reading {}", path.to_str().unwrap().bold()));
+
+                // Create a new printer for the thread
+                let mut local_printer = Printer::new();
+
+                // Assign the printer a line
+                local_printer.reserve_line(cursor_offset);
+                cursor_offset += 1;
+                local_printer.start_print(format!("Reading {}", path.to_str().unwrap().bold()));
+                let ret = rets_iter.next().unwrap();
+                s.spawn(move || {
                     let path_str = path.to_str().unwrap();
-                    let image_read = image::io::Reader::open(path_str);
-                    if let Ok(image) = image_read {
+                    let image_reader = image::io::Reader::open(path_str);
+                    if let Ok(image) = image_reader {
                         if let Ok(image_raw) = image.decode() {
-                            local_printer.finish_print();
+
+                            // Success, terminate thread
+                            local_printer.finish_print(true);
                             ret.replace(image_raw);
                             return;
                         }
                     }
         
-                    local_printer.fail_print("Failed".to_string());
+                    local_printer.finish_print(false);
                 });
             }
         }        
     });
 
     return rets;
-}
-
-/// Open source image for reading
-fn open_source_img(path: &std::path::Path, printer: &mut Printer) -> Option<DynamicImage> {
-    let mut res: Option<DynamicImage> = None;
-    thread::scope(|s| {
-        s.spawn(|| {
-            let path_str = path.to_str().unwrap();
-            printer.start_print(format!("Reading {}", path_str.bold()));
-            let image_read = image::io::Reader::open(path);
-            if let Ok(image) = image_read {
-                if let Ok(image_raw) = image.decode() {
-                    printer.finish_print();
-                    res.replace(image_raw);
-                    return;
-                }
-            }
-
-            printer.fail_print("Failed".to_string());
-        }).join().unwrap();
-    });
-
-    return res;
 }
 
 fn main() {
@@ -198,7 +189,6 @@ fn main() {
         return;
     }
 
-
     // Get output image
     if let Some(path) = output_path {
         if let Some(parent) = path.parent() {
@@ -218,11 +208,6 @@ fn main() {
             let images = open_source_images(&paths);
             for path_idx in 0..paths.len() {
                 if let Some(path) = paths[path_idx] {
-                    if let None = images[path_idx] {
-                        printer.fail_print(format!("Invalid path {} for input {}", path.to_str().unwrap(), path_idx));
-                        help();
-                        return;
-                    }
 
                     match select_mask_bytes[path_idx] as char {
                         'r' => channel_selects[path_idx] = 0,
@@ -237,32 +222,6 @@ fn main() {
                     }
                 }
             }
-        
-            /*
-            for path_idx in 0..paths.len() {
-                if let Some(path) = paths[path_idx] {
-                    files[path_idx] = open_source_img(path, &mut printer);
-
-                    if let None = files[path_idx] {
-                        printer.fail_print(format!("Invalid path {} for input {}", path.to_str().unwrap(), path_idx));
-                        help();
-                        return;
-                    }
-
-                    match select_mask_bytes[path_idx] as char {
-                        'r' => channel_selects[path_idx] = 0,
-                        'g' => channel_selects[path_idx] = 1,
-                        'b' => channel_selects[path_idx] = 2,
-                        'a' => channel_selects[path_idx] = 3,
-                        other => {
-                            printer.fail_print(format!("Invalid select mask {} for input {}", other as char, path_idx));
-                            help();
-                            return;
-                        }
-                    }
-                }
-            }
-             */
 
             // Break down swizzle mask into components
             let mut fill = Rgba([0, 0, 0, 255]);
@@ -398,13 +357,16 @@ fn main() {
                     });
                 }
             }
-            printer.finish_print();
+            printer.finish_print(true);
 
             // Finally save file
             printer.start_print(format!("Writing out {}", path.to_str().unwrap().bold()));
             io::stdout().flush().unwrap();
-            rgba.save_with_format(path, image::ImageFormat::Png).unwrap();
-            printer.finish_print();
+            if let Ok(_) = rgba.save_with_format(path, image::ImageFormat::Png) {
+                printer.finish_print(true);
+            } else {
+                printer.finish_print(false);
+            }
 
             timer.elapsed();
         }        
