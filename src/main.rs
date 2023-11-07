@@ -164,6 +164,8 @@ fn main() {
     let mut swizzle_mask: &str = "bbbw";
     let mut select_mask: &str = "rrrr";
     let mut output_path = None;
+
+    println!("");
     if (1..args.len()).len() % 2 != 0 {
         help();
         return;
@@ -263,7 +265,7 @@ fn main() {
                         };
                         formats.push(format);
                     } else {
-                        printer.fail_print(format!("Swizzle mask needs input source '{}', but none provided", channel - 1));
+                        printer.fail_print(format!("Swizzle mask needs input source '{}', but none provided", swizzle));
                         help();
                         return;
                     }
